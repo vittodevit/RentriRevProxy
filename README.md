@@ -1,6 +1,6 @@
 # RentriRevProxy
 This software is a reverse proxy that implements internally the authentication and signing of request directed to the RENTRI api. 
-The software exposes locally a REST API does not need authentication and can be used to interact with the RENTRI API.
+The software exposes locally a REST API that does not need authentication and can be used to interact with the RENTRI API.
 
 ### Installation
 - build the project with maven or use the provided jar in the release tab
