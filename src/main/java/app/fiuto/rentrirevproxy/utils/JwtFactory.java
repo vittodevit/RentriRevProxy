@@ -5,6 +5,9 @@ import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.security.cert.CertificateEncodingException;
 import java.security.interfaces.ECPrivateKey;
 import java.util.*;
@@ -18,6 +21,20 @@ public class JwtFactory {
     private final JWSHeader header;
     private final String certAudience;
     private final JWSSigner signer;
+
+    public JwtFactory(byte[] serializedBundle) throws IOException, ClassNotFoundException, CertificateEncodingException, JOSEException {
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(serializedBundle);
+        ObjectInputStream objectInputStream = new ObjectInputStream(byteArrayInputStream);
+        ExtractedBundle ex = (ExtractedBundle) objectInputStream.readObject();
+        this.extractedBundle = ex;
+        String certificateBase64 = Base64.getEncoder().encodeToString(ex.getCertificate().getEncoded());
+        this.header = new JWSHeader.Builder(JWSAlgorithm.ES256)
+                .type(JOSEObjectType.JWT)
+                .x509CertChain(Collections.singletonList(new com.nimbusds.jose.util.Base64(certificateBase64)))
+                .build();
+        certAudience = ex.isEnableApiDemoMode() ? "rentrigov.demo.api" : "rentrigov.api";
+        signer = new ECDSASigner((ECPrivateKey) ex.getPrivateKey());
+    }
 
     public JwtFactory(ExtractedBundle extractedBundle) throws CertificateEncodingException, JOSEException {
         this.extractedBundle = extractedBundle;

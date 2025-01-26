@@ -1,9 +1,13 @@
 package app.fiuto.rentrirevproxy.utils;
 
+import java.io.Serial;
+import java.io.Serializable;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 
-public class ExtractedBundle {
+public class ExtractedBundle implements Serializable {
+    @Serial
+    private static final long serialVersionUID = 1L;
     private final X509Certificate certificate;
     private final PrivateKey privateKey;
     private final String jwtIssuer;

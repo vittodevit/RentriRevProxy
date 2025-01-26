@@ -1,14 +1,15 @@
 package app.fiuto.rentrirevproxy.controller;
 
-import app.fiuto.rentrirevproxy.utils.SharedContext;
+import app.fiuto.rentrirevproxy.model.Bundle;
+import app.fiuto.rentrirevproxy.repository.BundleRepository;
+import app.fiuto.rentrirevproxy.utils.JwtFactory;
 import app.fiuto.rentrirevproxy.utils.Utils;
 import jakarta.servlet.http.HttpServletRequest;
+import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.*;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.client.RestClientException;
@@ -22,6 +23,9 @@ class ReverseProxyController {
 
     private final RestTemplate restTemplate;
 
+    @Autowired
+    BundleRepository bundleRepository;
+
     public ReverseProxyController(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
@@ -29,10 +33,51 @@ class ReverseProxyController {
 
     @RequestMapping("/**")
     public ResponseEntity<String> proxyRequest(HttpServletRequest request) {
+
+        // get certificate owner id from the Db-ID header
+        String certificateOwnerId = request.getHeader("Db-ID");
+        if(certificateOwnerId == null) {
+            return ResponseEntity
+                    .status(400)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{ \"proxyError\": \"Db-ID header not found\" }");
+        }
+
+        Bundle bundle;
+        try {
+            bundle = bundleRepository.findByProprietarioId(new ObjectId(certificateOwnerId));
+            if (bundle == null) {
+                throw new Exception("Bundle not found");
+            }
+        } catch (Exception e) {
+            return ResponseEntity
+                    .status(404)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{ \"proxyError\": \"Bundle not found for that user\" }");
+        }
+
+        if(bundle.getExtractedBundle() == null) {
+            return ResponseEntity
+                    .status(400)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{ \"proxyError\": \"Bundle not yet extracted\" }");
+        }
+
+        JwtFactory jwtFactory;
+
+        try {
+            jwtFactory = new JwtFactory(bundle.getExtractedBundle());
+        } catch (Exception e) {
+            return ResponseEntity
+                    .status(500)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{ \"proxyError\": \"Error creating JWT factory\" }");
+        }
+
         try {
             String targetUrl = Utils.determineTargetUrl(
                     request,
-                    SharedContext.jwtFactory.getExtractedBundle().isEnableApiDemoMode()
+                    jwtFactory.getExtractedBundle().isEnableApiDemoMode()
             );
             HttpMethod method = HttpMethod.valueOf(request.getMethod());
             var body = request.getInputStream().readAllBytes();
@@ -48,13 +93,13 @@ class ReverseProxyController {
                 }
             }
 
-            headers.set("Authorization", "Bearer " + SharedContext.jwtFactory.createJWT());
+            headers.set("Authorization", "Bearer " + jwtFactory.createJWT());
 
             if(method.matches("POST") || method.matches("PUT")) {
                 headers.set("Content-Type", "application/json");
 
                 String digest = Utils.createDigest(body);
-                String agidJwtSignature = SharedContext.jwtFactory.createAgidSignatureJWT(digest);
+                String agidJwtSignature = jwtFactory.createAgidSignatureJWT(digest);
 
                 headers.set("Digest", "SHA-256=" + digest);
                 headers.set("Agid-JWT-Signature", agidJwtSignature);
@@ -67,8 +112,12 @@ class ReverseProxyController {
             logger.info("Proxying request to: " + targetUrl);
             var response = restTemplate.exchange(URI.create(targetUrl), method, httpEntity, String.class);
 
+            HttpHeaders responseHeaders = new HttpHeaders();
+            responseHeaders.putAll(response.getHeaders());
+            responseHeaders.set("X-Signed-By", jwtFactory.getExtractedBundle().getJwtIssuer());
+
             return ResponseEntity.status(response.getStatusCode())
-                    .headers(response.getHeaders())
+                    .headers(responseHeaders)
                     .body(response.getBody());
 
         } catch (RestClientException restClientException) {
