@@ -9,8 +9,6 @@ import org.springframework.web.client.RestTemplate;
 public class RentriRevProxyApplication {
 
     public static void main(String[] args) {
-        String mongoUri = System.getenv("MONGODB_URI");
-        // Replace the placeholder with your MongoDB deployment's connection string
         SpringApplication.run(RentriRevProxyApplication.class, args);
     }
 

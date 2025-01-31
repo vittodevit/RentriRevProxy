@@ -1,6 +1,8 @@
 package app.fiuto.rentrirevproxy.controller;
 
+import app.fiuto.rentrirevproxy.RedisService;
 import app.fiuto.rentrirevproxy.model.Bundle;
+import app.fiuto.rentrirevproxy.model.SerializableResponseEntity;
 import app.fiuto.rentrirevproxy.repository.BundleRepository;
 import app.fiuto.rentrirevproxy.utils.JwtFactory;
 import app.fiuto.rentrirevproxy.utils.Utils;
@@ -26,13 +28,40 @@ class ReverseProxyController {
     @Autowired
     BundleRepository bundleRepository;
 
+    @Autowired
+    RedisService redisService;
+
+
     public ReverseProxyController(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
     Logger logger = LoggerFactory.getLogger(ReverseProxyController.class);
 
+    private static final int CACHE_EXPIRY = Integer.parseInt(System.getenv("CACHE_EXPIRY"));
+
     @RequestMapping("/**")
     public ResponseEntity<String> proxyRequest(HttpServletRequest request) {
+
+        // NO BUNDLE CHECK IS NEEDED:
+        // The bundle is needed only for API's that are not "codifiche",
+        // an API that does not really require authentication because it
+        // exposes no personal data.
+        boolean isCacheable = request.getRequestURI().contains("codifiche/v1.0") && CACHE_EXPIRY > 0;
+        String cacheKey = "";
+        if (isCacheable) {
+            cacheKey = Utils.calculateCacheKeyFromRequest(request);
+            // pull it from cache if it exists
+            var byteCached = (byte[]) redisService.get(cacheKey);
+            SerializableResponseEntity cachedResponse = null;
+            if (byteCached != null) {
+                cachedResponse = (SerializableResponseEntity) Utils.deserialize(byteCached);
+            }
+            if (cachedResponse != null) {
+                // passing expiry and key to the response entity
+                // because headers are not editable after the response is created
+                return cachedResponse.toResponseEntity(CACHE_EXPIRY, cacheKey);
+            }
+        }
 
         // get certificate owner id from the Db-ID header
         String certificateOwnerId = request.getHeader("Db-ID");
@@ -105,23 +134,33 @@ class ReverseProxyController {
                 headers.set("Agid-JWT-Signature", agidJwtSignature);
             }
 
-
             HttpEntity<?> httpEntity = new HttpEntity<>(body, headers);
 
             // Send the request
-            logger.info("Proxying request to: " + targetUrl);
+            logger.info("Proxying request to: {}", targetUrl);
             var response = restTemplate.exchange(URI.create(targetUrl), method, httpEntity, String.class);
 
             HttpHeaders responseHeaders = new HttpHeaders();
             responseHeaders.putAll(response.getHeaders());
             responseHeaders.set("X-Signed-By", jwtFactory.getExtractedBundle().getJwtIssuer());
 
+            // if it arrived here the cache did not hit, save the response
+            if (isCacheable) {
+                var cachedResponse = new SerializableResponseEntity(
+                        response.getStatusCode(),
+                        responseHeaders,
+                        response.getBody()
+                );
+                byte[] serialized = Utils.serialize(cachedResponse);
+                redisService.save(cacheKey, serialized, CACHE_EXPIRY);
+            }
+
             return ResponseEntity.status(response.getStatusCode())
                     .headers(responseHeaders)
                     .body(response.getBody());
 
         } catch (RestClientException restClientException) {
-            logger.error("Error proxying request: " + restClientException.getMessage());
+            logger.error("Error proxying request: {}", restClientException.getMessage());
             if (restClientException instanceof org.springframework.web.client.HttpClientErrorException httpClientErrorException) {
                 return ResponseEntity
                         .status(httpClientErrorException.getStatusCode())
@@ -135,7 +174,7 @@ class ReverseProxyController {
             }
         } catch (Exception e) {
             // something wrong with the proxy
-            logger.error("Error in reverse proxy: " + e.getMessage());
+            logger.error("Error in reverse proxy: {}", e.getMessage());
             return ResponseEntity
                     .status(500)
                     .contentType(MediaType.APPLICATION_JSON)

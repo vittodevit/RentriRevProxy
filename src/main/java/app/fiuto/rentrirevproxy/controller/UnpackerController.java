@@ -71,8 +71,6 @@ public class UnpackerController {
             objectOutputStream.writeObject(extractedBundle);
             serializedData = byteArrayOutputStream.toByteArray();
 
-            System.out.println("Object serialized successfully into a byte array.");
-
         } catch (Exception e) {
             return ResponseEntity
                     .status(500)
